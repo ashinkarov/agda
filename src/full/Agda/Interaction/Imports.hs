@@ -21,11 +21,12 @@ import qualified Data.Set as Set
 import Data.Maybe
 import Data.Map (Map)
 import qualified Data.HashMap.Strict as HMap
-import Data.Text.Lazy (Text)
-import qualified Data.Text.Lazy as T
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.Lazy as TL
 
 import System.Directory (doesFileExist, getModificationTime, removeFile)
-import System.FilePath ((</>))
+import System.FilePath ((</>), takeDirectory)
 
 import Agda.Benchmarking
 
@@ -58,6 +59,7 @@ import Agda.Interaction.FindFile
 import Agda.Interaction.Highlighting.Generate
 import Agda.Interaction.Highlighting.Precise  ( compress )
 import Agda.Interaction.Highlighting.Vim
+import Agda.Interaction.Library
 import Agda.Interaction.Options
 import qualified Agda.Interaction.Options.Lenses as Lens
 import Agda.Interaction.Response
@@ -80,10 +82,11 @@ import Agda.Utils.Impossible
 -- | Some information about the source code.
 
 data SourceInfo = SourceInfo
-  { siSource     :: Text                  -- ^ Source code.
+  { siSource     :: TL.Text               -- ^ Source code.
   , siFileType   :: FileType              -- ^ Source file type
   , siModule     :: C.Module              -- ^ The parsed module.
   , siModuleName :: C.TopLevelModuleName  -- ^ The top-level module name.
+  , siProjectLibs :: [AgdaLibFile]        -- ^ The .agda-lib file(s) of the project this file belongs to.
   }
 
 -- | Computes a 'SourceInfo' record for the given file.
@@ -92,14 +95,26 @@ sourceInfo :: SourceFile -> TCM SourceInfo
 sourceInfo (SourceFile f) = Bench.billTo [Bench.Parsing] $ do
   source                <- runPM $ readFilePM f
   (parsedMod, fileType) <- runPM $
-                           parseFile moduleParser f $ T.unpack source
+                           parseFile moduleParser f $ TL.unpack source
   moduleName            <- moduleName f parsedMod
+  let sourceDir = takeDirectory $ filePath f
+  useLibs <- optUseLibs <$> commandLineOptions
+  libs <- if | useLibs   -> libToTCM $ getAgdaLibFiles sourceDir
+             | otherwise -> return []
   return SourceInfo
     { siSource     = source
     , siFileType   = fileType
     , siModule     = parsedMod
     , siModuleName = moduleName
+    , siProjectLibs = libs
     }
+
+sourcePragmas :: SourceInfo -> TCM [OptionsPragma]
+sourcePragmas SourceInfo{..} = do
+  let defaultPragmas = map _libPragmas siProjectLibs
+  let cpragmas = C.modPragmas siModule
+  pragmas <- concreteOptionsToOptionPragmas cpragmas
+  return $ defaultPragmas ++ pragmas
 
 -- | Is the aim to type-check the top-level module, or only to
 -- scope-check it?
@@ -152,13 +167,18 @@ mergeInterface i = do
             Just b1 = Map.lookup b bs
             Just b2 = Map.lookup b bi
     mapM_ (check . fst) (Map.toList $ Map.intersection bs bi)
-    addImportedThings sig bi (iPatternSyns i) (iDisplayForms i) (iUserWarnings i) (iPartialDefs i) warns
+    addImportedThings sig bi
+      (iPatternSyns i)
+      (iDisplayForms i)
+      (iUserWarnings i)
+      (iPartialDefs i)
+      warns
     reportSLn "import.iface.merge" 20 $
       "  Rebinding primitives " ++ show prim
     mapM_ rebind prim
-    whenM (optConfluenceCheck <$> pragmaOptions) $ do
+    whenJustM (optConfluenceCheck <$> pragmaOptions) $ \confChk -> do
       reportSLn "import.iface.confluence" 20 $ "  Checking confluence of imported rewrite rules"
-      checkConfluenceOfRules $ concat $ HMap.elems $ sig ^. sigRewriteRules
+      checkConfluenceOfRules confChk $ concat $ HMap.elems $ sig ^. sigRewriteRules
     where
         rebind (x, q) = do
             PrimImpl _ pf <- lookupPrimitiveFunction x
@@ -169,7 +189,7 @@ addImportedThings
   -> BuiltinThings PrimFun
   -> A.PatternSynDefns
   -> DisplayForms
-  -> Map A.QName String    -- ^ Imported user warnings
+  -> Map A.QName Text      -- ^ Imported user warnings
   -> Set QName             -- ^ Name of imported definitions which are partial
   -> [TCWarning]
   -> TCM ()
@@ -386,12 +406,12 @@ getInterface' x isMain msi =
              (unless (includeStateChanges isMain) . (stPragmaOptions `setTCLens`)) $ do
      -- We remember but reset the pragma options locally
      -- For the main interface, we also remember the pragmas from the file
-     let mpragmas = fst . siModule <$> msi
      -- Issue #3644 (Abel 2020-05-08): Set approximate range for errors in options
-     currentOptions <- setCurrentRange mpragmas $ do
+     currentOptions <- setCurrentRange (C.modPragmas . siModule <$> msi) $ do
        when (includeStateChanges isMain) $ do
-         let pragmas = fromMaybe __IMPOSSIBLE__ mpragmas
-         mapM_ setOptionsFromPragma =<< concreteOptionsToOptionPragmas pragmas
+         let si = fromMaybe __IMPOSSIBLE__ msi
+         pragmas <- sourcePragmas si
+         mapM_ setOptionsFromPragma pragmas
        currentOptions <- useTC stPragmaOptions
        -- Now reset the options
        setCommandLineOptions . stPersistentOptions . stPersistentState =<< getTC
@@ -572,7 +592,7 @@ getStoredInterface x file isMain msi = do
       reportSLn "import.iface" 5 "  bad interface, re-type checking"
       fallback
     Just i        -> do
-      reportSLn "import.iface" 5 $ "  imports: " ++ show (iImportedModules i)
+      reportSLn "import.iface" 5 $ "  imports: " ++ prettyShow (iImportedModules i)
 
       -- We set the pragma options of the skipped file here, so that
       -- we can check that they are compatible with those of the
@@ -859,20 +879,20 @@ createInterface file mname isMain msi =
       reportSLn "import.iface.create" 10 $
         "  visited: " ++ List.intercalate ", " (map prettyShow visited)
 
-    (source, fileType, (pragmas, top)) <- do
-      si <- case msi of
-        Nothing -> sourceInfo file
-        Just si -> return si
-      case si of
-        SourceInfo {..} -> return (siSource, siFileType, siModule)
+    si <- case msi of
+      Nothing -> sourceInfo file
+      Just si -> return si
+    let source   = siSource si
+        fileType = siFileType si
+        top      = C.modDecls $ siModule si
 
     modFile       <- useTC stModuleToSource
     fileTokenInfo <- Bench.billTo [Bench.Highlighting] $
                        generateTokenInfoFromSource
-                         (srcFilePath file) (T.unpack source)
+                         (srcFilePath file) (TL.unpack source)
     stTokens `setTCLens` fileTokenInfo
 
-    options <- concreteOptionsToOptionPragmas pragmas
+    options <- sourcePragmas si
     mapM_ setOptionsFromPragma options
 
     verboseS "import.iface.create" 15 $ do
@@ -1118,7 +1138,7 @@ getMaybeWarnings' isMain ww = do
 
 getAllWarningsOfTCErr :: TCErr -> TCM [TCWarning]
 getAllWarningsOfTCErr err = case err of
-  TypeError tcst cls -> case clValue cls of
+  TypeError _ tcst cls -> case clValue cls of
     NonFatalErrors{} -> return []
     _ -> localTCState $ do
       putTC tcst
@@ -1139,7 +1159,7 @@ constructIScope i = billToPure [ Deserialization ] $
 -- have been successfully type checked.
 
 buildInterface
-  :: Text
+  :: TL.Text
      -- ^ Source code.
   -> FileType
      -- ^ Agda file? Literate Agda file?

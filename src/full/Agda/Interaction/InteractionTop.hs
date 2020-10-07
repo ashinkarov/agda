@@ -1,4 +1,5 @@
 {-# LANGUAGE NondecreasingIndentation #-}
+{-# LANGUAGE NoMonoLocalBinds #-}  -- counteract MonoLocalBinds implied by TypeFamilies
 
 {-# OPTIONS_GHC -fno-cse #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
@@ -43,6 +44,7 @@ import Agda.Syntax.Position
 import Agda.Syntax.Parser
 import Agda.Syntax.Common
 import Agda.Syntax.Concrete as C
+import Agda.Syntax.Concrete.Glyph
 import Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract.Pretty
 import Agda.Syntax.Info (mkDefInfo)
@@ -247,8 +249,7 @@ handleCommand wrap onFail cmd = handleNastyErrors $ wrap $ do
     -- the status information is also updated.
     handleErr method e = do
         unsolvedNotOK <- lift $ not . optAllowUnsolved <$> pragmaOptions
-        meta    <- lift $ computeUnsolvedMetaWarnings
-        constr  <- lift $ computeUnsolvedConstraints
+        unsolved <- lift $ computeUnsolvedInfo
         err     <- lift $ errorHighlighting e
         modFile <- lift $ useTC stModuleToSource
         method  <- case method of
@@ -256,19 +257,21 @@ handleCommand wrap onFail cmd = handleNastyErrors $ wrap $ do
           Just m  -> return m
         let info = compress $ mconcat $
                      -- Errors take precedence over unsolved things.
-                     err : if unsolvedNotOK then [meta, constr] else []
+                     err : if unsolvedNotOK then [unsolved] else []
 
         -- TODO: make a better predicate for this
         noError <- lift $ null <$> prettyError e
 
-        x <- lift $ optShowImplicit <$> useTC stPragmaOptions
+        showImpl <- lift $ optShowImplicit <$> useTC stPragmaOptions
+        showIrr <- lift $ optShowIrrelevant <$> useTC stPragmaOptions
         unless noError $ mapM_ putResponse $
             [ Resp_DisplayInfo $ Info_Error $ Info_GenericError e ] ++
             tellEmacsToJumpToError (getRange e) ++
             [ Resp_HighlightingInfo info KeepHighlighting
                                     method modFile ] ++
             [ Resp_Status $ Status { sChecked = False
-                                   , sShowImplicitArguments = x
+                                   , sShowImplicitArguments = showImpl
+                                   , sShowIrrelevantArguments = showIrr
                                    } ]
 
 -- | Run an 'IOTCM' value, catch the exceptions, emit output
@@ -464,6 +467,8 @@ updateInteractionPointsAfter Cmd_tokenHighlighting{}             = False
 updateInteractionPointsAfter Cmd_highlight{}                     = True
 updateInteractionPointsAfter ShowImplicitArgs{}                  = False
 updateInteractionPointsAfter ToggleImplicitArgs{}                = False
+updateInteractionPointsAfter ShowIrrelevantArgs{}                = False
+updateInteractionPointsAfter ToggleIrrelevantArgs{}              = False
 updateInteractionPointsAfter Cmd_give{}                          = True
 updateInteractionPointsAfter Cmd_refine{}                        = True
 updateInteractionPointsAfter Cmd_intro{}                         = True
@@ -492,7 +497,7 @@ updateInteractionPointsAfter Cmd_exit{}                          = False
 interpret :: Interaction -> CommandM ()
 
 interpret (Cmd_load m argv) =
-  cmd_load' m argv True mode $ \_ -> interpret Cmd_metas
+  cmd_load' m argv True mode $ \_ -> interpret $ Cmd_metas AsIs
   where
   mode = Imp.TypeCheck TopLevelInteraction -- do not reset InteractionMode
 
@@ -516,8 +521,8 @@ interpret (Cmd_compile backend file argv) =
 interpret Cmd_constraints =
     display_info . Info_Constraints =<< lift B.getConstraints
 
-interpret Cmd_metas = do
-  ms <- lift B.getGoals
+interpret (Cmd_metas norm) = do
+  ms <- lift $ B.getGoals' norm (max Simplified norm)
   display_info . Info_AllGoalsWarnings ms =<< lift B.getWarningsAndNonFatalErrors
 
 interpret (Cmd_show_module_contents_toplevel norm s) =
@@ -549,7 +554,7 @@ interpret (Cmd_compute_toplevel cmode s) = do
     where
     action = allowNonTerminatingReductions
            . (if B.computeIgnoreAbstract cmode then ignoreAbstractMode else inConcreteMode)
-           . B.evalInCurrent
+           . B.evalInCurrent cmode
 -- interpret (Cmd_compute_toplevel cmode s) =
 --   parseAndDoAtToplevel action Info_NormalForm $ computeWrapInput cmode s
 --   where
@@ -570,6 +575,19 @@ interpret ToggleImplicitArgs = do
   setCommandLineOpts $
     opts { optPragmaOptions =
              ps { optShowImplicit = not $ optShowImplicit ps } }
+
+interpret (ShowIrrelevantArgs showIrr) = do
+  opts <- lift commandLineOptions
+  setCommandLineOpts $
+    opts { optPragmaOptions =
+             (optPragmaOptions opts) { optShowIrrelevant = showIrr } }
+
+interpret ToggleIrrelevantArgs = do
+  opts <- lift commandLineOptions
+  let ps = optPragmaOptions opts
+  setCommandLineOpts $
+    opts { optPragmaOptions =
+             ps { optShowIrrelevant = not $ optShowIrrelevant ps } }
 
 interpret (Cmd_load_highlighting_info source) = do
   l <- asksTC envHighlightingLevel
@@ -683,7 +701,7 @@ interpret (Cmd_autoOne ii rng hint) = do
     -- Andreas, 2014-07-07: Remove the interaction points in one go.
     modifyTheInteractionPoints (List.\\ (map fst sols))
     case autoMessage res of
-     Nothing  -> interpret Cmd_metas
+     Nothing  -> interpret $ Cmd_metas AsIs
      Just msg -> display_info $ Info_Auto msg
    FunClauses cs -> do
     case autoMessage res of
@@ -804,21 +822,20 @@ interpret (Cmd_make_case ii rng s) = do
     -- very dirty hack, string manipulation by dropping the function name
     -- and replacing the last " = " with " -> ". It's important not to replace
     -- the equal sign in named implicit with an arrow!
-    extlam_dropName :: Bool -> CaseContext -> String -> String
+    extlam_dropName :: UnicodeOrAscii -> CaseContext -> String -> String
     extlam_dropName _ Nothing x = x
-    extlam_dropName unicode Just{}  x
+    extlam_dropName glyphMode Just{}  x
         = unwords $ reverse $ replEquals $ reverse $ drop 1 $ words x
       where
-        replEquals ("=" : ws)
-           | unicode   = "→" : ws
-           | otherwise = "->" : ws
+        arrow = render $ _arrow $ specialCharactersForGlyphs glyphMode
+        replEquals ("=" : ws) = arrow : ws
         replEquals (w   : ws) = w : replEquals ws
         replEquals []         = []
 
 interpret (Cmd_compute cmode ii rng s) = do
   expr <- liftLocalState $ do
     e <- B.parseExprIn ii rng $ B.computeWrapInput cmode s
-    B.withInteractionId ii $ applyWhen (B.computeIgnoreAbstract cmode) ignoreAbstractMode $ B.evalInCurrent e
+    B.withInteractionId ii $ applyWhen (B.computeIgnoreAbstract cmode) ignoreAbstractMode $ B.evalInCurrent cmode e
   display_info $ Info_GoalSpecific ii (Goal_NormalForm cmode expr)
 
 interpret Cmd_show_version = display_info Info_Version
@@ -896,6 +913,7 @@ cmd_load' file argv unsolvedOK mode cmd = do
     case z of
       Left err   -> lift $ typeError $ GenericError err
       Right (_, opts) -> do
+        opts <- lift $ addTrustedExecutables opts
         let update o = o { optAllowUnsolved = unsolvedOK && optAllowUnsolved o}
             root     = projectRoot fp $ Imp.siModuleName si
         lift $ TCM.setCommandLineOptions' root $ mapPragmaOptions update opts
@@ -964,7 +982,7 @@ setInteractionMode mode = modify $ \ st -> st { interactionMode = mode }
 handleNotInScope :: CommandM a -> CommandM a -> CommandM a
 handleNotInScope cmd handler = do
   cmd `catchError` \case
-    TypeError _s (Closure _sig _env _scope _checkpoints (TCM.NotInScope _xs)) -> do
+    TypeError _ _ (Closure _sig _env _scope _checkpoints (TCM.NotInScope _xs)) -> do
       reportSLn "interaction.top" 60 $ "Handling `Not in scope` error"
       handler
     err -> do
@@ -1051,7 +1069,7 @@ give_gen force ii rng s0 giveRefine = do
     putResponse $ Resp_GiveAction ii $ mkNewTxt literally ce
     lift $ reportSLn "interaction.give" 30 $ "putResponse GiveAction passed"
     -- display new goal set (if not measuring time)
-    maybe (interpret Cmd_metas) (display_info . Info_Time) time
+    maybe (interpret $ Cmd_metas AsIs) (display_info . Info_Time) time
     lift $ reportSLn "interaction.give" 30 $ "interpret Cmd_metas passed"
   where
     -- Substitutes xs for x in ys.
@@ -1136,6 +1154,7 @@ status :: CommandM Status
 status = do
   cf       <- gets theCurrentFile
   showImpl <- lift showImplicitArguments
+  showIrr  <- lift showIrrelevantArguments
 
   -- Check if the file was successfully type checked, and has not
   -- changed since. Note: This code does not check if any dependencies
@@ -1154,7 +1173,9 @@ status = do
         else
             return False
 
-  return $ Status { sShowImplicitArguments = showImpl, sChecked = checked }
+  return $ Status { sShowImplicitArguments   = showImpl,
+                    sShowIrrelevantArguments = showIrr,
+                    sChecked                 = checked }
 
 -- | Displays or updates status information.
 --

@@ -133,7 +133,7 @@ projView v = do
 --   (Also reduces projections, but they should not be there,
 --   since Internal is in lambda- and projection-beta-normal form.)
 --
-reduceProjectionLike :: (MonadReduce m, MonadTCEnv m, HasConstInfo m) => Term -> m Term
+reduceProjectionLike :: PureTCM m => Term -> m Term
 reduceProjectionLike v = do
   -- Andreas, 2013-11-01 make sure we do not reduce a constructor
   -- because that could be folded back into a literal by reduce.
@@ -156,9 +156,7 @@ reduceProjectionLike v = do
 --   No precondition.
 --   Preserves constructorForm, since it really does only something
 --   on (applications of) projection-like functions.
-elimView
-  :: (MonadReduce m, MonadTCEnv m, HasConstInfo m)
-  => Bool -> Term -> m Term
+elimView :: PureTCM m => Bool -> Term -> m Term
 elimView loneProjToLambda v = do
   reportSDoc "tc.conv.elim" 30 $ "elimView of " <+> prettyTCM v
   v <- reduceProjectionLike v
@@ -260,7 +258,7 @@ makeProjection x = whenM (optProjectionLike <$> pragmaOptions) $ do
                  funAbstr = ConcreteDef} -> do
       ps0 <- filterM validProj $ candidateArgs [] t
       reportSLn "tc.proj.like" 30 $ if null ps0 then "  no candidates found"
-                                                else "  candidates: " ++ show ps0
+                                                else "  candidates: " ++ prettyShow ps0
       unless (null ps0) $ do
         -- Andreas 2012-09-26: only consider non-recursive functions for proj.like.
         -- Issue 700: problems with recursive funs. in term.checker and reduction

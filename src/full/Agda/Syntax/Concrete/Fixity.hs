@@ -8,6 +8,7 @@ module Agda.Syntax.Concrete.Fixity
   ) where
 
 import Prelude hiding (null)
+
 import Control.Monad
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -23,6 +24,7 @@ import Agda.Syntax.Concrete
 import Agda.Syntax.Position
 import Agda.TypeChecking.Positivity.Occurrence (Occurrence)
 
+import Agda.Utils.CallStack (HasCallStack)
 import Agda.Utils.Functor
 import qualified Agda.Utils.List1 as List1
 import Agda.Utils.Null
@@ -35,10 +37,10 @@ type Polarities = Map Name [Occurrence]
 class Monad m => MonadFixityError m where
   throwMultipleFixityDecls            :: [(Name, [Fixity'])] -> m a
   throwMultiplePolarityPragmas        :: [Name] -> m a
-  warnUnknownNamesInFixityDecl        :: [Name] -> m ()
-  warnUnknownNamesInPolarityPragmas   :: [Name] -> m ()
-  warnUnknownFixityInMixfixDecl       :: [Name] -> m ()
-  warnPolarityPragmasButNotPostulates :: [Name] -> m ()
+  warnUnknownNamesInFixityDecl        :: HasCallStack => [Name] -> m ()
+  warnUnknownNamesInPolarityPragmas   :: HasCallStack => [Name] -> m ()
+  warnUnknownFixityInMixfixDecl       :: HasCallStack => [Name] -> m ()
+  warnPolarityPragmasButNotPostulates :: HasCallStack => [Name] -> m ()
 
 -- | Add more fixities. Throw an exception for multiple fixity declarations.
 --   OR:  Disjoint union of fixity maps.  Throws exception if not disjoint.
@@ -207,7 +209,7 @@ declaredNames d = case d of
   FieldSig _ _ x _     -> declaresName x
   Field _ fs           -> foldMap declaredNames fs
   FunClause (LHS p [] [] _) _ _ _
-    | IdentP (QName x) <- removeSingletonRawAppP p
+    | IdentP (QName x) <- removeParenP p
                        -> declaresName x
   FunClause{}          -> mempty
   DataSig _ x _ _      -> declaresName x

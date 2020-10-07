@@ -9,6 +9,7 @@ import Data.Set ( Set, null, insert, difference, delete )
 import Data.Map ( fromList )
 import qualified Data.Set as Set
 import qualified Data.Map as Map
+import qualified Data.Text as T
 
 import System.Directory ( createDirectoryIfMissing )
 import System.FilePath ( splitFileName, (</>) )
@@ -538,21 +539,21 @@ qname q = do
   return (foldl Lookup e ls)
 
 literal :: Literal -> Exp
-literal l = case l of
-  (LitNat    _ x) -> Integer x
-  (LitWord64 _ x) -> Integer (fromIntegral x)
-  (LitFloat  _ x) -> Double  x
-  (LitString _ x) -> String  x
-  (LitChar   _ x) -> Char    x
-  (LitQName  _ x) -> litqname x
-  LitMeta{}       -> __IMPOSSIBLE__
+literal = \case
+  (LitNat    x) -> Integer x
+  (LitWord64 x) -> Integer (fromIntegral x)
+  (LitFloat  x) -> Double  x
+  (LitString x) -> String  x
+  (LitChar   x) -> Char    x
+  (LitQName  x) -> litqname x
+  LitMeta{}     -> __IMPOSSIBLE__
 
 litqname :: QName -> Exp
 litqname q =
   Object $ Map.fromList
     [ (mem "id", Integer $ fromIntegral n)
     , (mem "moduleId", Integer $ fromIntegral m)
-    , (mem "name", String $ prettyShow q)
+    , (mem "name", String $ T.pack $ prettyShow q)
     , (mem "fixity", litfixity fx)]
   where
     mem = MemberId
@@ -604,31 +605,136 @@ copyRTEModules = do
 -- | Primitives implemented in the JS Agda RTS.
 primitives :: Set String
 primitives = Set.fromList
-  [ "primExp"
-  , "primFloatDiv"
-  , "primFloatEquality"
-  , "primFloatLess"
-  , "primFloatNumericalEquality"
-  , "primFloatNumericalLess"
-  , "primFloatNegate"
-  , "primFloatMinus"
-  , "primFloatPlus"
-  , "primFloatSqrt"
-  , "primFloatTimes"
+  [  "primShowInteger"
+
+  -- Natural number functions
+  -- , "primNatPlus"                 -- missing
   , "primNatMinus"
-  , "primShowFloat"
-  , "primShowInteger"
-  , "primSin"
-  , "primCos"
-  , "primTan"
-  , "primASin"
-  , "primACos"
-  , "primATan"
-  , "primATan2"
-  , "primShowQName"
-  , "primQNameEquality"
-  , "primQNameLess"
-  , "primQNameFixity"
+  -- , "primNatTimes"                -- missing
+  -- , "primNatDivSucAux"            -- missing
+  -- , "primNatModSucAux"            -- missing
+  -- , "primNatEquality"             -- missing
+  -- , "primNatLess"                 -- missing
+  -- , "primShowNat"                 -- missing
+
+  -- Machine words
   , "primWord64ToNat"
   , "primWord64FromNat"
+  -- , "primWord64ToNatInjective"    -- missing
+
+  -- Level functions
+  -- , "primLevelZero"               -- missing
+  -- , "primLevelSuc"                -- missing
+  -- , "primLevelMax"                -- missing
+
+  -- Sorts
+  -- , "primSetOmega"                -- missing
+  -- , "primStrictSetOmega"          -- missing
+
+  -- Floating point functions
+  , "primFloatEquality"
+  , "primFloatInequality"
+  , "primFloatLess"
+  , "primFloatIsInfinite"
+  , "primFloatIsNaN"
+  , "primFloatIsNegativeZero"
+  , "primFloatIsSafeInteger"
+  , "primFloatToWord64"
+  -- , "primFloatToWord64Injective"  -- missing
+  , "primNatToFloat"
+  , "primIntToFloat"
+  -- , "primFloatRound"              -- in Agda.Builtin.Float
+  -- , "primFloatFloor"              -- in Agda.Builtin.Float
+  -- , "primFloatCeiling"            -- in Agda.Builtin.Float
+  -- , "primFloatToRatio"            -- in Agda.Builtin.Float
+  , "primRatioToFloat"
+  -- , "primFloatDecode"             -- in Agda.Builtin.Float
+  -- , "primFloatEncode"             -- in Agda.Builtin.Float
+  , "primShowFloat"
+  , "primFloatPlus"
+  , "primFloatMinus"
+  , "primFloatTimes"
+  , "primFloatNegate"
+  , "primFloatDiv"
+  , "primFloatSqrt"
+  , "primFloatExp"
+  , "primFloatLog"
+  , "primFloatSin"
+  , "primFloatCos"
+  , "primFloatTan"
+  , "primFloatASin"
+  , "primFloatACos"
+  , "primFloatATan"
+  , "primFloatATan2"
+  , "primFloatSinh"
+  , "primFloatCosh"
+  , "primFloatTanh"
+  , "primFloatASinh"
+  , "primFloatACosh"
+  , "primFloatATanh"
+  , "primFloatPow"
+
+  -- Character functions
+  -- , "primCharEquality"            -- missing
+  -- , "primIsLower"                 -- missing
+  -- , "primIsDigit"                 -- missing
+  -- , "primIsAlpha"                 -- missing
+  -- , "primIsSpace"                 -- missing
+  -- , "primIsAscii"                 -- missing
+  -- , "primIsLatin1"                -- missing
+  -- , "primIsPrint"                 -- missing
+  -- , "primIsHexDigit"              -- missing
+  -- , "primToUpper"                 -- missing
+  -- , "primToLower"                 -- missing
+  -- , "primCharToNat"               -- missing
+  -- , "primCharToNatInjective"      -- missing
+  -- , "primNatToChar"               -- missing
+  -- , "primShowChar"                -- in Agda.Builtin.String
+
+  -- String functions
+  -- , "primStringToList"            -- in Agda.Builtin.String
+  -- , "primStringToListInjective"   -- missing
+  -- , "primStringFromList"          -- in Agda.Builtin.String
+  -- , "primStringFromListInjective" -- missing
+  -- , "primStringAppend"            -- in Agda.Builtin.String
+  -- , "primStringEquality"          -- in Agda.Builtin.String
+  -- , "primShowString"              -- in Agda.Builtin.String
+  -- , "primStringUncons"            -- in Agda.Builtin.String
+
+  -- Other stuff
+  -- , "primEraseEquality"           -- missing
+  -- , "primForce"                   -- missing
+  -- , "primForceLemma"              -- missing
+  , "primQNameEquality"
+  , "primQNameLess"
+  , "primShowQName"
+  , "primQNameFixity"
+  -- , "primQNameToWord64s"          -- missing
+  -- , "primQNameToWord64sInjective" -- missing
+  -- , "primMetaEquality"            -- missing
+  -- , "primMetaLess"                -- missing
+  -- , "primShowMeta"                -- missing
+  -- , "primMetaToNat"               -- missing
+  -- , "primMetaToNatInjective"      -- missing
+  -- , "primIMin"                    -- missing
+  -- , "primIMax"                    -- missing
+  -- , "primINeg"                    -- missing
+  -- , "primPOr"                     -- missing
+  -- , "primComp"                    -- missing
+  -- , builtinTrans                  -- missing
+  -- , builtinHComp                  -- missing
+  -- , "primIdJ"                     -- missing
+  -- , "primPartial"                 -- missing
+  -- , "primPartialP"                -- missing
+  -- , builtinGlue                   -- missing
+  -- , builtin_glue                  -- missing
+  -- , builtin_unglue                -- missing
+  -- , builtinFaceForall             -- missing
+  -- , "primDepIMin"                 -- missing
+  -- , "primIdFace"                  -- missing
+  -- , "primIdPath"                  -- missing
+  -- , builtinIdElim                 -- missing
+  -- , builtinSubOut                 -- missing
+  -- , builtin_glueU                 -- missing
+  -- , builtin_unglueU               -- missing
   ]

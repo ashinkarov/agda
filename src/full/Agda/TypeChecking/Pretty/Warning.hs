@@ -8,15 +8,18 @@ import Data.Function
 import Data.Maybe
 import qualified Data.Set as Set
 import qualified Data.List as List
+import qualified Data.Text as T
 
 import Agda.TypeChecking.Monad.Base
 import {-# SOURCE #-} Agda.TypeChecking.Errors
 import Agda.TypeChecking.Monad.MetaVars
 import Agda.TypeChecking.Monad.Options
+import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.State ( getScope )
 import Agda.TypeChecking.Positivity () --instance only
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Pretty.Call
+import {-# SOURCE #-} Agda.TypeChecking.Pretty.Constraint (prettyInterestingConstraints, interestingConstraint)
 
 import Agda.Syntax.Common ( ImportedName'(..), fromImportedName, partitionImportedNames )
 import Agda.Syntax.Position
@@ -31,43 +34,16 @@ import Agda.Interaction.Options.Warnings
 
 import Agda.Utils.Lens
 import Agda.Utils.List ( editDistance )
+import qualified Agda.Utils.List1 as List1
 import Agda.Utils.Null
 import Agda.Utils.Pretty ( Pretty, prettyShow )
 import qualified Agda.Utils.Pretty as P
 
 instance PrettyTCM TCWarning where
-  prettyTCM = return . tcWarningPrintedWarning
+  prettyTCM w@(TCWarning loc _ _ _ _) = do
+    reportSLn "warning" 2 $ "Warning raised at " ++ prettyShow loc
+    pure $ tcWarningPrintedWarning w
 
-instance PrettyTCM Warning where
-  prettyTCM = prettyWarning
-
-prettyConstraint :: MonadPretty m => ProblemConstraint -> m Doc
-prettyConstraint c = f (locallyTCState stInstantiateBlocking (const True) $ prettyTCM c)
-  where
-    r   = getRange c
-    f :: MonadPretty m => m Doc -> m Doc
-    f d = if null $ P.pretty r
-          then d
-          else d $$ nest 4 ("[ at" <+> prettyTCM r <+> "]")
-
-interestingConstraint :: ProblemConstraint -> Bool
-interestingConstraint pc = go $ clValue (theConstraint pc)
-  where
-    go UnBlock{}     = False
-    go (Guarded c _) = go c
-    go _             = True
-
-prettyInterestingConstraints :: MonadPretty m => [ProblemConstraint] -> m [Doc]
-prettyInterestingConstraints cs = mapM (prettyConstraint . stripPids) $ List.sortBy (compare `on` isBlocked) cs'
-  where
-    isBlocked = not . null . blocking . clValue . theConstraint
-    cs' = filter interestingConstraint cs
-    interestingPids = Set.fromList $ concatMap (blocking . clValue . theConstraint) cs'
-    stripPids (PConstr pids c) = PConstr (Set.intersection pids interestingPids) c
-    blocking (Guarded c pid) = pid : blocking c
-    blocking _               = []
-
-{-# SPECIALIZE prettyWarning :: Warning -> TCM Doc #-}
 prettyWarning :: MonadPretty m => Warning -> m Doc
 prettyWarning = \case
 
@@ -154,6 +130,11 @@ prettyWarning = \case
 
     UselessPublic -> fwords $ "Keyword `public' is ignored here"
 
+    UselessHiding xs -> fsep $ concat
+      [ pwords "Ignoring names in `hiding' directive:"
+      , punctuate "," $ map pretty xs
+      ]
+
     UselessInline q -> fsep $
       pwords "It is pointless for INLINE'd function" ++ [prettyTCM q] ++
       pwords "to have a separate Haskell definition"
@@ -183,6 +164,8 @@ prettyWarning = \case
     GenericWarning d -> return d
 
     GenericNonFatalError d -> return d
+
+    GenericUseless _r d -> return d
 
     SafeFlagPostulate e -> fsep $
       pwords "Cannot postulate" ++ [pretty e] ++ pwords "with safe flag"
@@ -229,7 +212,7 @@ prettyWarning = \case
 
     NicifierIssue w -> sayWhere (getRange w) $ pretty w
 
-    UserWarning str -> text str
+    UserWarning str -> text (T.unpack str)
 
     ModuleDoesntExport m names modules xs -> vcat
       [ fsep $ pwords "The module" ++ [pretty m] ++ pwords "doesn't export the following:"
@@ -242,6 +225,8 @@ prettyWarning = \case
       ms            = map ImportedModule ms0
       (ys0, ms0)    = partitionImportedNames xs
       suggestion zs = maybe empty parens . didYouMean (map C.QName zs) fromImportedName
+
+    DuplicateUsing xs -> fsep $ pwords "Duplicates in `using` directive:" ++ map pretty (List1.toList xs)
 
     FixityInRenamingModule _rs -> fsep $ pwords "Modules do not have fixity"
 
@@ -256,7 +241,7 @@ prettyWarning = \case
       [pretty o] ++ pwords "flag from a module which does."
 
     RewriteNonConfluent lhs rhs1 rhs2 err -> fsep
-      [ "Confluence check failed:"
+      [ "Local confluence check failed:"
       , prettyTCM lhs , "reduces to both"
       , prettyTCM rhs1 , "and" , prettyTCM rhs2
       , "which are not equal because"
@@ -271,6 +256,31 @@ prettyWarning = \case
           ]
         ]
       , map (nest 2 . return) cs
+      ]
+
+    RewriteAmbiguousRules lhs rhs1 rhs2 -> vcat
+      [ ( fsep $ concat
+          [ pwords "Global confluence check failed:" , [prettyTCM lhs]
+          , pwords "can be rewritten to either" , [prettyTCM rhs1]
+          , pwords "or" , [prettyTCM rhs2 <> "."]
+          ])
+      , fsep $ concat
+        [ pwords "Possible fix: add a rewrite rule with left-hand side"
+        , [prettyTCM lhs] , pwords "to resolve the ambiguity."
+        ]
+      ]
+
+    RewriteMissingRule u v rhou -> vcat
+      [ fsep $ concat
+        [ pwords "Global confluence check failed:" , [prettyTCM u]
+        , pwords "unfolds to" , [prettyTCM v] , pwords "which should further unfold to"
+        , [prettyTCM rhou] , pwords "but it does not."
+        ]
+      , fsep $ concat
+        [ pwords "Possible fix: add a rule to rewrite"
+        , [ prettyTCM v , "to" , prettyTCM rhou <> "," ]
+        , pwords "or change the order of the rules so more specialized rules come later."
+        ]
       ]
 
     PragmaCompileErased bn qn -> fsep $ concat
@@ -414,8 +424,8 @@ applyFlagsToTCWarnings' isMain ws = do
   -- This is a way to collect all of them and remove duplicates.
   let pragmas w = case tcWarning w of { SafeFlagPragma ps -> ([w], ps); _ -> ([], []) }
   let sfp = case fmap List.nub (foldMap pragmas ws) of
-              (TCWarning r w p b:_, sfp) ->
-                 [TCWarning r (SafeFlagPragma sfp) p b]
+              (TCWarning loc r w p b:_, sfp) ->
+                 [TCWarning loc r (SafeFlagPragma sfp) p b]
               _                        -> []
 
   warnSet <- do

@@ -252,10 +252,10 @@ casetree cc = do
                 case defn of
                   Constructor{conData = dtNm} -> return $ C.CTData dtNm
                   _                           -> go (cs , [])
-              ([], (LitChar _ _):_)  -> return C.CTChar
-              ([], (LitString _ _):_) -> return C.CTString
-              ([], (LitFloat _ _):_) -> return C.CTFloat
-              ([], (LitQName _ _):_) -> return C.CTQName
+              ([], (LitChar _):_)  -> return C.CTChar
+              ([], (LitString _):_) -> return C.CTString
+              ([], (LitFloat _):_) -> return C.CTFloat
+              ([], (LitQName _):_) -> return C.CTQName
               _ -> __IMPOSSIBLE__
 
         caseTy <- go (Map.keys conBrs', Map.keys litBrs)
@@ -379,7 +379,7 @@ mkRecord fs = lift $ do
   -- Get the name of the first field
   let p1 = fst $ headWithDefault __IMPOSSIBLE__ $ Map.toList fs
   -- Use the field name to get the record constructor and the field names.
-  I.ConHead c _ind xs <- conSrcCon . theDef <$> (getConstInfo =<< canonicalName . I.conName =<< recConFromProj p1)
+  I.ConHead c IsRecord{} _ind xs <- conSrcCon . theDef <$> (getConstInfo =<< canonicalName . I.conName =<< recConFromProj p1)
   reportSDoc "treeless.convert.mkRecord" 60 $ vcat
     [ text "record constructor fields: xs      = " <+> (text . show) xs
     , text "to be filled with content: keys fs = " <+> (text . show) (Map.keys fs)

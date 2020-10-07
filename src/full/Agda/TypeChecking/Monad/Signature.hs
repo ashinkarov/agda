@@ -1,5 +1,4 @@
 {-# LANGUAGE NondecreasingIndentation #-}
-{-# LANGUAGE TypeFamilies #-} -- for type equality ~
 
 module Agda.TypeChecking.Monad.Signature where
 
@@ -63,6 +62,7 @@ import Agda.Utils.ListT
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
+import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.Singleton
 import Agda.Utils.Size
 import Agda.Utils.Update
@@ -580,10 +580,14 @@ getDisplayForms q = do
 chaseDisplayForms :: QName -> TCM (Set QName)
 chaseDisplayForms q = go Set.empty [q]
   where
+    go :: Set QName        -- ^ Accumulator.
+       -> [QName]          -- ^ Work list.  TODO: make work set to avoid duplicate chasing?
+       -> TCM (Set QName)
     go used []       = pure used
     go used (q : qs) = do
       let rhs (Display _ _ e) = e   -- Only look at names in the right-hand side (#1870)
-      ds <- (`Set.difference` used) . Set.unions . map (namesIn . rhs . dget)
+      let notYetUsed x = if x `Set.member` used then Set.empty else Set.singleton x
+      ds <- namesIn' notYetUsed . map (rhs . dget)
             <$> (getDisplayForms q `catchError_` \ _ -> pure [])  -- might be a pattern synonym
       go (Set.union ds used) (Set.toList ds ++ qs)
 
@@ -667,7 +671,7 @@ class ( Functor m
       Right d -> return d
       Left (SigUnknown err) -> __IMPOSSIBLE_VERBOSE__ err
       Left SigAbstract      -> __IMPOSSIBLE_VERBOSE__ $
-        "Abstract, thus, not in scope: " ++ show q
+        "Abstract, thus, not in scope: " ++ prettyShow q
 
   -- | Version that reports exceptions:
   getConstInfo' :: QName -> m (Either SigError Definition)
@@ -721,9 +725,9 @@ defaultGetConstInfo st env q = do
     let defs  = st^.(stSignature . sigDefinitions)
         idefs = st^.(stImports . sigDefinitions)
     case catMaybes [HMap.lookup q defs, HMap.lookup q idefs] of
-        []  -> return $ Left $ SigUnknown $ "Unbound name: " ++ show q ++ showQNameId q
+        []  -> return $ Left $ SigUnknown $ "Unbound name: " ++ prettyShow q ++ showQNameId q
         [d] -> mkAbs env d
-        ds  -> __IMPOSSIBLE_VERBOSE__ $ "Ambiguous name: " ++ show q
+        ds  -> __IMPOSSIBLE_VERBOSE__ $ "Ambiguous name: " ++ prettyShow q
     where
       mkAbs env d
         | treatAbstractly' q' env =
@@ -754,6 +758,7 @@ instance HasConstInfo m => HasConstInfo (MaybeT m)
 instance HasConstInfo m => HasConstInfo (ReaderT r m)
 instance HasConstInfo m => HasConstInfo (StateT s m)
 instance (Monoid w, HasConstInfo m) => HasConstInfo (WriterT w m)
+instance HasConstInfo m => HasConstInfo (BlockT m)
 
 {-# INLINE getConInfo #-}
 getConInfo :: HasConstInfo m => ConHead -> m Definition
@@ -770,7 +775,7 @@ getPolarity' CmpEq  q = map (composePol Invariant) <$> getPolarity q -- return [
 getPolarity' CmpLeq q = getPolarity q -- composition with Covariant is identity
 
 -- | Set the polarity of a definition.
-setPolarity :: QName -> [Polarity] -> TCM ()
+setPolarity :: (MonadTCState m, MonadDebug m) => QName -> [Polarity] -> m ()
 setPolarity q pol = do
   reportSDoc "tc.polarity.set" 20 $
     "Setting polarity of" <+> pretty q <+> "to" <+> pretty pol <> "."
@@ -790,10 +795,10 @@ getArgOccurrence d i = do
 
 -- | Sets the 'defArgOccurrences' for the given identifier (which
 -- should already exist in the signature).
-setArgOccurrences :: QName -> [Occurrence] -> TCM ()
+setArgOccurrences :: MonadTCState m => QName -> [Occurrence] -> m ()
 setArgOccurrences d os = modifyArgOccurrences d $ const os
 
-modifyArgOccurrences :: QName -> ([Occurrence] -> [Occurrence]) -> TCM ()
+modifyArgOccurrences :: MonadTCState m => QName -> ([Occurrence] -> [Occurrence]) -> m ()
 modifyArgOccurrences d f =
   modifySignature $ updateDefinition d $ updateDefArgOccurrences f
 

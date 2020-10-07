@@ -27,8 +27,7 @@ import Agda.Syntax.Internal
 import Agda.Syntax.Abstract (ProblemEq(..))
 import qualified Agda.Syntax.Abstract as A
 
-import Agda.TypeChecking.Monad (TCM, IsForced(..), addContext, lookupSection, currentModule)
-import Agda.TypeChecking.Monad.Debug
+import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Records
@@ -289,7 +288,9 @@ instance PrettyTCM LeftoverPatterns where
 -- | Classify remaining patterns after splitting is complete into pattern
 --   variables, as patterns, dot patterns, and absurd patterns.
 --   Precondition: there are no more constructor patterns.
-getLeftoverPatterns :: [ProblemEq] -> TCM LeftoverPatterns
+getLeftoverPatterns
+  :: forall m. PureTCM m
+  => [ProblemEq] -> m LeftoverPatterns
 getLeftoverPatterns eqs = do
   reportSDoc "tc.lhs.top" 30 $ "classifying leftover patterns"
   params <- Set.fromList . teleNames <$> (lookupSection =<< currentModule)
@@ -303,7 +304,7 @@ getLeftoverPatterns eqs = do
     absurdPattern info a = LeftoverPatterns empty [] [] [Absurd info a] []
     otherPattern p       = LeftoverPatterns empty [] [] [] [p]
 
-    getLeftoverPattern :: (A.Name -> Bool) -> ProblemEq -> TCM LeftoverPatterns
+    getLeftoverPattern :: (A.Name -> Bool) -> ProblemEq -> m LeftoverPatterns
     getLeftoverPattern isParamName (ProblemEq p v a) = case p of
       (A.VarP A.BindName{unBind = x}) -> isEtaVar v (unDom a) >>= \case
         Just i  | isParamName x -> return $ moduleParameter x i
@@ -341,16 +342,20 @@ getUserVariableNames tel names = runWriter $
     partitionIsParam = (map fst *** map fst) . partition ((== PVParam) . snd)
 
 
-instance Subst Term (Problem a) where
+instance Subst (Problem a) where
+  type SubstArg (Problem a) = Term
   applySubst rho (Problem eqs rps cont) = Problem (applySubst rho eqs) rps cont
 
-instance Subst Term AsBinding where
+instance Subst AsBinding where
+  type SubstArg AsBinding = Term
   applySubst rho (AsB x v a) = uncurry (AsB x) $ applySubst rho (v, a)
 
-instance Subst Term DotPattern where
+instance Subst DotPattern where
+  type SubstArg DotPattern = Term
   applySubst rho (Dot e v a) = uncurry (Dot e) $ applySubst rho (v, a)
 
-instance Subst Term AbsurdPattern where
+instance Subst AbsurdPattern where
+  type SubstArg AbsurdPattern = Term
   applySubst rho (Absurd r a) = Absurd r $ applySubst rho a
 
 instance PrettyTCM ProblemEq where
@@ -389,6 +394,6 @@ instance PrettyTCM (LHSState a) where
     [ "tel             = " <+> prettyTCM tel
     , "outPat          = " <+> addContext tel (prettyTCMPatternList outPat)
     , "problemEqs      = " <+> addContext tel (prettyList_ $ map prettyTCM eqs)
-    , "problemRestPats = " <+> prettyList_ (return $ prettyA rps)
+    , "problemRestPats = " <+> prettyList_ (map prettyA rps)
     , "target          = " <+> addContext tel (prettyTCM target)
     ]

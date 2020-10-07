@@ -1,4 +1,3 @@
-{-# LANGUAGE TypeFamilies #-}
 
 {-| A constructor argument is forced if it appears as pattern variable
 in an index of the target.
@@ -78,6 +77,7 @@ import Agda.TypeChecking.Telescope
 
 import Agda.Utils.List
 import Agda.Utils.Monad
+import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.Size
 
 import Agda.Utils.Impossible
@@ -121,7 +121,7 @@ computeForcingAnnotations c t =
           | (i, m) <- zip (downFrom n) $ map getModality (telToList tel)
           ]
     reportS "tc.force" 60
-      [ "Forcing analysis for " ++ show c
+      [ "Forcing analysis for " ++ prettyShow c
       , "  xs          = " ++ show (map snd xs)
       , "  forcedArgs  = " ++ show forcedArgs
       ]
@@ -160,4 +160,3 @@ isForced NotForced = False
 nextIsForced :: [IsForced] -> (IsForced, [IsForced])
 nextIsForced []     = (NotForced, [])
 nextIsForced (f:fs) = (f, fs)
-

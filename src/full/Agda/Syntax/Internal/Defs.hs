@@ -1,4 +1,3 @@
-{-# LANGUAGE TypeFamilies #-}
 
 -- | Extract used definitions from terms.
 
@@ -78,9 +77,11 @@ instance GetDefs Sort where
   getDefs s = case s of
     Type l    -> getDefs l
     Prop l    -> getDefs l
-    Inf _     -> return ()
+    Inf _ _   -> return ()
+    SSet l    -> getDefs l
     SizeUniv  -> return ()
-    PiSort a s  -> getDefs a >> getDefs s
+    LockUniv  -> return ()
+    PiSort a s1 s2 -> getDefs a >> getDefs s1 >> getDefs s2
     FunSort s1 s2 -> getDefs s1 >> getDefs s2
     UnivSort s  -> getDefs s
     MetaS x es  -> getDefs x >> getDefs es
@@ -92,13 +93,6 @@ instance GetDefs Level where
 
 instance GetDefs PlusLevel where
   getDefs (Plus _ l)    = getDefs l
-
-instance GetDefs LevelAtom where
-  getDefs a = case a of
-    MetaLevel x vs   -> getDefs x >> getDefs vs
-    BlockedLevel _ v -> getDefs v
-    NeutralLevel _ v -> getDefs v
-    UnreducedLevel v -> getDefs v
 
 -- collection instances
 
