@@ -113,6 +113,7 @@ instance Instantiate t => Instantiate (Abs t)
 instance Instantiate t => Instantiate (Arg t)
 instance Instantiate t => Instantiate (Elim' t)
 instance Instantiate t => Instantiate (Tele t)
+instance Instantiate t => Instantiate (IPBoundary' t)
 
 instance (Instantiate a, Instantiate b) => Instantiate (a,b) where
     instantiate' (x,y) = (,) <$> instantiate' x <*> instantiate' y
@@ -526,6 +527,7 @@ unfoldDefinitionStep unfoldDelayed v0 f es =
   rewr <- instantiateRewriteRules =<< getRewriteRulesFor f
   allowed <- asksTC envAllowedReductions
   prp <- runBlocked $ isPropM $ defType info
+  defOk <- shouldReduceDef f
   let def = theDef info
       v   = v0 `applyE` es
       -- Non-terminating functions
@@ -537,6 +539,7 @@ unfoldDefinitionStep unfoldDelayed v0 f es =
         || (defTerminationUnconfirmed info && SmallSet.notMember UnconfirmedReductions allowed)
         || (defDelayed info == Delayed && not unfoldDelayed)
         || prp == Right True || isIrrelevant (defArgInfo info)
+        || not defOk
       copatterns = defCopatternLHS info
   case def of
     Constructor{conSrcCon = c} -> do
@@ -819,6 +822,8 @@ instance Reduce t => Reduce (IPBoundary' t) where
 
 -- | Only unfold definitions if this leads to simplification
 --   which means that a constructor/literal pattern is matched.
+--   We include reduction of IApply patterns, as `p i0` is akin to
+--   matcing on the `i0` constructor of interval.
 class Simplify t where
   simplify' :: t -> ReduceM t
 
@@ -853,8 +858,9 @@ instance Simplify Bool where
 instance Simplify Term where
   simplify' v = do
     v <- instantiate' v
+    let iapp es m = ignoreBlocking <$> reduceIApply' (\ t -> notBlocked <$> simplify' t) (notBlocked <$> m) es
     case v of
-      Def f vs   -> do
+      Def f vs   -> iapp vs $ do
         let keepGoing simp v = return (simp, notBlocked v)
         (simpl, v) <- unfoldDefinition' False keepGoing (Def f []) f vs
         traceSDoc "tc.simplify'" 90 (
@@ -863,13 +869,13 @@ instance Simplify Term where
         case simpl of
           YesSimplification -> simplifyBlocked' v -- Dangerous, but if @simpl@ then @v /= Def f vs@
           NoSimplification  -> Def f <$> simplify' vs
-      MetaV x vs -> MetaV x  <$> simplify' vs
-      Con c ci vs-> Con c ci <$> simplify' vs
+      MetaV x vs -> iapp vs $ MetaV x  <$> simplify' vs
+      Con c ci vs-> iapp vs $ Con c ci <$> simplify' vs
       Sort s     -> Sort     <$> simplify' s
       Level l    -> levelTm  <$> simplify' l
       Pi a b     -> Pi       <$> simplify' a <*> simplify' b
       Lit l      -> return v
-      Var i vs   -> Var i    <$> simplify' vs
+      Var i vs   -> iapp vs $ Var i    <$> simplify' vs
       Lam h v    -> Lam h    <$> simplify' v
       DontCare v -> dontCare <$> simplify' v
       Dummy{}    -> return v
@@ -1181,6 +1187,7 @@ instance InstantiateFull t => InstantiateFull (Elim' t)
 instance InstantiateFull t => InstantiateFull (Named name t)
 instance InstantiateFull t => InstantiateFull (Open t)
 instance InstantiateFull t => InstantiateFull (WithArity t)
+instance InstantiateFull t => InstantiateFull (IPBoundary' t)
 
 -- Tuples:
 
