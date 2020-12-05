@@ -1,7 +1,9 @@
 {-# LANGUAGE CPP                        #-}
-{-# LANGUAGE DeriveDataTypeable         #-}
 
-module Agda.TypeChecking.Monad.Base where
+module Agda.TypeChecking.Monad.Base
+  ( module Agda.TypeChecking.Monad.Base
+  , HasOptions (..)
+  ) where
 
 import Prelude hiding (null)
 
@@ -721,6 +723,7 @@ class Monad m => MonadFresh i m where
 instance MonadFresh i m => MonadFresh i (ReaderT r m)
 instance MonadFresh i m => MonadFresh i (StateT s m)
 instance MonadFresh i m => MonadFresh i (ListT m)
+instance MonadFresh i m => MonadFresh i (IdentityT m)
 
 instance HasFresh i => MonadFresh i TCM where
   fresh = do
@@ -852,6 +855,9 @@ class Monad m => MonadStConcreteNames m where
 
 instance MonadStConcreteNames TCM where
   runStConcreteNames m = stateTCLensM stConcreteNames $ runStateT m
+
+instance MonadStConcreteNames m => MonadStConcreteNames (IdentityT m) where
+  runStConcreteNames m = IdentityT $ runStConcreteNames $ StateT $ runIdentityT . runStateT m
 
 instance MonadStConcreteNames m => MonadStConcreteNames (ReaderT r m) where
   runStConcreteNames m = ReaderT $ runStConcreteNames . StateT . flip (runReaderT . runStateT m)
@@ -2787,9 +2793,6 @@ data TCEnv =
                 -- ^ Should new metas generalized over.
           , envGeneralizedVars :: Map QName GeneralizedValue
                 -- ^ Values for used generalizable variables.
-          , envCheckOptionConsistency :: Bool
-                -- ^ Do we check that options in imported files are
-                --   consistent with each other?
           , envActiveBackendName :: Maybe BackendName
                 -- ^ Is some backend active at the moment, and if yes, which?
                 --   NB: we only store the 'BackendName' here, otherwise
@@ -2823,7 +2826,7 @@ initEnv = TCEnv { envContext             = []
   -- The initial mode should be 'ConcreteMode', ensuring you
   -- can only look into abstract things in an abstract
   -- definition (which sets 'AbstractMode').
-                , envModality               = mempty
+                , envModality               = unitModality
                 , envSplitOnStrict          = False
                 , envDisplayFormsEnabled    = True
                 , envRange                  = noRange
@@ -2852,7 +2855,6 @@ initEnv = TCEnv { envContext             = []
                 , envCheckpoints            = Map.singleton 0 IdS
                 , envGeneralizeMetas        = NoGeneralize
                 , envGeneralizedVars        = Map.empty
-                , envCheckOptionConsistency = True
                 , envActiveBackendName      = Nothing
                 }
 
@@ -3682,18 +3684,6 @@ instance E.Exception TCErr
 -- * Accessing options
 -----------------------------------------------------------------------------
 
-class (Functor m, Applicative m, Monad m) => HasOptions m where
-  -- | Returns the pragma options which are currently in effect.
-  pragmaOptions      :: m PragmaOptions
-  -- | Returns the command line options which are currently in effect.
-  commandLineOptions :: m CommandLineOptions
-
-  default pragmaOptions :: (HasOptions n, MonadTrans t, m ~ t n) => m PragmaOptions
-  pragmaOptions      = lift pragmaOptions
-
-  default commandLineOptions :: (HasOptions n, MonadTrans t, m ~ t n) => m CommandLineOptions
-  commandLineOptions = lift commandLineOptions
-
 instance MonadIO m => HasOptions (TCMT m) where
   pragmaOptions = useTC stPragmaOptions
 
@@ -3704,15 +3694,6 @@ instance MonadIO m => HasOptions (TCMT m) where
 
 -- HasOptions lifts through monad transformers
 -- (see default signatures in the HasOptions class).
-
-instance HasOptions m => HasOptions (ChangeT m)
-instance HasOptions m => HasOptions (ExceptT e m)
-instance HasOptions m => HasOptions (IdentityT m)
-instance HasOptions m => HasOptions (ListT m)
-instance HasOptions m => HasOptions (MaybeT m)
-instance HasOptions m => HasOptions (ReaderT r m)
-instance HasOptions m => HasOptions (StateT s m)
-instance (HasOptions m, Monoid w) => HasOptions (WriterT w m)
 
 -- Ternary options are annoying to deal with so we provide auxiliary
 -- definitions using @collapseDefault@.
@@ -3725,18 +3706,6 @@ guardednessOption = collapseDefault . optGuardedness <$> pragmaOptions
 
 withoutKOption :: HasOptions m => m Bool
 withoutKOption = collapseDefault . optWithoutK <$> pragmaOptions
-
--- | Gets the include directories.
---
--- Precondition: 'optAbsoluteIncludePaths' must be nonempty (i.e.
--- 'setCommandLineOptions' must have run).
-
-getIncludeDirs :: HasOptions m => m [AbsolutePath]
-getIncludeDirs = do
-  incs <- optAbsoluteIncludePaths <$> commandLineOptions
-  case incs of
-    [] -> __IMPOSSIBLE__
-    _  -> return incs
 
 enableCaching :: HasOptions m => m Bool
 enableCaching = optCaching <$> pragmaOptions
@@ -3920,49 +3889,23 @@ class Monad m => MonadTCState m where
   putTC :: TCState -> m ()
   modifyTC :: (TCState -> TCState) -> m ()
 
-  {-# MINIMAL getTC, (putTC | modifyTC) #-}
-  putTC      = modifyTC . const
-  modifyTC f = putTC . f =<< getTC
+  default getTC :: (MonadTrans t, MonadTCState n, t n ~ m) => m TCState
+  getTC = lift getTC
 
-instance MonadTCState m => MonadTCState (MaybeT m) where
-  getTC    = lift getTC
-  putTC    = lift . putTC
+  default putTC :: (MonadTrans t, MonadTCState n, t n ~ m) => TCState -> m ()
+  putTC = lift . putTC
+
+  default modifyTC :: (MonadTrans t, MonadTCState n, t n ~ m) => (TCState -> TCState) -> m ()
   modifyTC = lift . modifyTC
 
-instance MonadTCState m => MonadTCState (ListT m) where
-  getTC    = lift getTC
-  putTC    = lift . putTC
-  modifyTC = lift . modifyTC
-
-instance MonadTCState m => MonadTCState (ExceptT err m) where
-  getTC    = lift getTC
-  putTC    = lift . putTC
-  modifyTC = lift . modifyTC
-
-instance MonadTCState m => MonadTCState (ReaderT r m) where
-  getTC    = lift getTC
-  putTC    = lift . putTC
-  modifyTC = lift . modifyTC
-
-instance (Monoid w, MonadTCState m) => MonadTCState (WriterT w m) where
-  getTC    = lift getTC
-  putTC    = lift . putTC
-  modifyTC = lift . modifyTC
-
-instance MonadTCState m => MonadTCState (StateT s m) where
-  getTC    = lift getTC
-  putTC    = lift . putTC
-  modifyTC = lift . modifyTC
-
-instance MonadTCState m => MonadTCState (ChangeT m) where
-  getTC    = lift getTC
-  putTC    = lift . putTC
-  modifyTC = lift . modifyTC
-
-instance MonadTCState m => MonadTCState (IdentityT m) where
-  getTC    = lift getTC
-  putTC    = lift . putTC
-  modifyTC = lift . modifyTC
+instance MonadTCState m => MonadTCState (MaybeT m)
+instance MonadTCState m => MonadTCState (ListT m)
+instance MonadTCState m => MonadTCState (ExceptT err m)
+instance MonadTCState m => MonadTCState (ReaderT r m)
+instance MonadTCState m => MonadTCState (StateT s m)
+instance MonadTCState m => MonadTCState (ChangeT m)
+instance MonadTCState m => MonadTCState (IdentityT m)
+instance (Monoid w, MonadTCState m) => MonadTCState (WriterT w m)
 
 -- ** @TCState@ accessors (no lenses)
 
@@ -4146,6 +4089,7 @@ instance MonadIO m => MonadTCEnv (TCMT m) where
 instance MonadIO m => MonadTCState (TCMT m) where
   getTC   = TCM $ \ r _e -> liftIO (readIORef r)
   putTC s = TCM $ \ r _e -> liftIO (writeIORef r s)
+  modifyTC f = putTC . f =<< getTC
 
 instance MonadIO m => ReadTCState (TCMT m) where
   getTCState = getTC
